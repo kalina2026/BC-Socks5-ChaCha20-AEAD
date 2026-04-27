@@ -1,49 +1,70 @@
-# A Zero-Trust FTP wrapper for Beyond Compare, turning hostile WiFi into a private encrypted tunnel
+# BC-Socks5-ChaCha20-AEAD
+### A Zero-Trust FTP wrapper for Beyond Compare, turning hostile WiFi into a private encrypted tunnel.
 
-This project provides a secure tunnel for Beyond Compare SE users working on compromised or untrusted WiFi networks. By wrapping standard FTP and SOCKS5 traffic in an authenticated encryption layer based on RFC 8439 (ChaCha20-Poly1305 AEAD), it prevents man-in-the-middle attackers from sniffing credentials, stealing file contents, or injecting malicious data into the transfer stream.
+This project provides a secure tunnel for **Beyond Compare SE** users working on compromised or untrusted WiFi networks. By wrapping standard FTP and SOCKS5 traffic in an authenticated encryption layer based on **RFC 8439 (ChaCha20-Poly1305 AEAD)**, it prevents man-in-the-middle attackers from sniffing credentials, stealing file contents, or injecting malicious data into the transfer stream.
 
-In addition to the encrypted proxy, this project will include a minimal FTP server implementation designed to accept only ChaCha20-Poly1305 AEAD-wrapped connections. Plaintext FTP will be rejected entirely, ensuring that only authenticated, encrypted clients can access the protected file endpoints.
+---
 
-* **Downgrade Protection:** The server cannot speak plaintext under any circumstances. There is no negotiation step (such as STARTTLS) that an attacker could intercept or strip.
-* **Replay Protection:** Each packet uses a strictly incrementing 96-bit nonce, preventing attackers from replaying captured commands or data.
-* **Minimal Footprint:** Compiling with tcc produces a tiny binary with zero dependencies, reducing the attack surface of the proxy itself.
+## Key Features
+
+* **AEAD Enforcement:** All network traffic is protected by authenticated encryption.
+* **Dual-Port Mirroring:** The server manages command and data channels through a symbiotic port-swap (2121/2122) to satisfy complex FTP handshakes.
+* **Downgrade Protection:** When compiled with `AEAD_ONLY`, the server physically disables plaintext entry points.
+* **Silent Drop Behavior:** Rejects malformed or unauthenticated packets without feedback to the attacker.
+* **Micro-Footprint:** Optimized for `tcc`. Server: **27kB**, Proxy: **16kB**. Zero external dependencies.
+
+---
+
 ## Security Model
 
-This project treats the local WiFi network as a fully hostile environment. All unencrypted traffic is confined to the local machine, and all remote communication is wrapped in ChaCha20-Poly1305 AEAD.
+This project treats the network as a fully hostile environment. All unencrypted traffic is confined to the local machine (`127.0.0.1`).
 
-**Boundary 1 — Local:**  
-Beyond Compare ↔ Local Proxy (plain SOCKS5, bound to 127.0.0.1 only)
+1.  **Boundary 1 (Local):** Beyond Compare ↔ Local Proxy (Plain SOCKS5)
+2.  **Boundary 2 (Network):** Local Proxy ↔ Remote FTP Server (AEAD Envelope)
 
-**Boundary 2 — Network:**  
-Local Proxy ↔ Remote FTP Server (all data encapsulated in the AEAD envelope)
+### Replay & Integrity Protection
+Each packet uses a strictly incrementing 96-bit nonce. If the server receives a packet with an out-of-sequence nonce or a failed Poly1305 tag, it immediately terminates the connection.
 
-This separation ensures that the only traffic exposed to the hostile network is encrypted, authenticated, and replay-protected.
+---
 
-## Packet Anatomy (AEAD Envelope)
+## Deployment & Build
 
-| Field      | Size       | Description                                              |
-|------------|------------|----------------------------------------------------------|
-| Length     | 4 bytes    | Length of the ciphertext that follows                   |
-| Nonce      | 12 bytes   | Unique per-packet 96-bit value (prevents replay)        |
-| Ciphertext | Variable   | Encrypted FTP/SOCKS5 payload (ChaCha20)                 |
-| Auth Tag   | 16 bytes   | Poly1305 MAC (detects tampering or corruption)          |
+### 1. Hardening (Optional but Recommended)
+Before compiling, edit `tcc_ftp_aead.c` and `socks4_win_proxy.c`:
+* Uncomment `#define AEAD_ONLY` in the server to disable the plaintext debug port (2121).
+* Change the `global_key[32]` to your own private 256-bit key.
 
-This structure makes the protocol self-delimiting, tamper-evident, and resistant to replay attacks.
+### 2. Compilation
+The project is designed to be built with the **Tiny C Compiler (TCC)** for a minimal attack surface.
 
-## Silent Drop Behavior
+**Linux (Server):**
+`tcc -o ftp_server tcc_ftp_aead.c`
 
-Because the threat model includes an active MITM probing for weaknesses, the server implements silent rejection:
+**Windows (Proxy):**
+`tcc socks4_win_proxy.c -lws2_32 -o proxy.exe`
 
-- If the length header is malformed  
-- If the Poly1305 tag fails  
-- If the nonce is reused or out of sequence  
+---
 
-…the server immediately closes the socket without sending any error message.
+## Technical Specifications
 
-Silence is a defensive posture: it denies attackers feedback about whether their guesses, injections, or bit-flips were close to valid.
+### Packet Anatomy (AEAD Envelope)
 
-## Replay Protection Details
+| Field | Size | Description |
+| :--- | :--- | :--- |
+| **Length** | 4 bytes | Little-endian length of the ciphertext |
+| **Nonce** | 12 bytes | 96-bit unique value (Salt + Counter) |
+| **Payload** | Variable | Encrypted FTP/SOCKS5 data (ChaCha20) |
+| **Auth Tag** | 16 bytes | Poly1305 MAC |
 
-To ensure replay protection in a Zero-Trust environment, the client and server synchronize nonces implicitly. Each session begins with a 96-bit nonce initialized to 0, and the sender increments it by 1 for every packet transmitted.
+### Port Mirroring Logic
+The system utilizes a permanent dual-port bind to handle the FTP Data Channel:
+* **Secure Entry (Port 2122):** Used for the Command Channel.
+* **Data Transit (Port 2121):** Dynamically opened for the Data Channel only after a secure command session is authenticated.
 
-Because the nonce space is 96 bits (2^96), exhaustion is practically impossible. If the server receives a packet whose nonce is not exactly the previous value plus one, it triggers a Silent Drop. This prevents attackers from dropping, reordering, or replaying packets in an attempt to manipulate the session.
+In `AEAD_ONLY` mode, Port 2121 acts as a "Black Hole"—it will not accept new command sessions, leaving attackers with no metadata or response.
+
+---
+
+## License
+**MIT** — Free and open for personal or professional use.
+**Origin:** Human + Gemini 3 Flash + Copilot.
